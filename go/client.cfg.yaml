@@ -1,0 +1,6 @@
+package: client
+generate:
+  models: true
+  client: true
+# assumes that we run oapi-generator from makefile for parent directory
+output: ./go/client/client.gen.go
