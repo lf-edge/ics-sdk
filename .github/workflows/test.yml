@@ -1,0 +1,17 @@
+name: Run tests
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  testing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install packages
+        run: |
+          sudo apt-get install -y curl git make
+          curl -fsSL https://quobix.com/scripts/install_vacuum.sh | sh
+      - name: Run Vacuum linter
+        run: |
+          make spec-lint
