@@ -4,6 +4,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -39,6 +40,11 @@ type BinaryBlob struct {
 	Url *string `json:"url,omitempty"`
 }
 
+// OpaqueStatus Opaque status to send back to controller
+type OpaqueStatus struct {
+	Status *[]byte `json:"status,omitempty"`
+}
+
 // PatchEnvelopeDescription Patch envelope contains of artifacts (binary blobs) which could be
 // anything you want (configuration files, binary executables, dynamic libraries, etc.)
 type PatchEnvelopeDescription struct {
@@ -50,6 +56,9 @@ type PatchEnvelopeDescription struct {
 	// Version Version of patch envelope
 	Version *string `json:"Version,omitempty"`
 }
+
+// PostOpaqueStatusJSONRequestBody defines body for PostOpaqueStatus for application/json ContentType.
+type PostOpaqueStatusJSONRequestBody = OpaqueStatus
 
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -124,8 +133,10 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 
 // The interface specification for the client above.
 type ClientInterface interface {
-	// PostOpaqueStatus request
-	PostOpaqueStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// PostOpaqueStatusWithBody request with any body
+	PostOpaqueStatusWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostOpaqueStatus(ctx context.Context, body PostOpaqueStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetAvailablePatchEnvelopes request
 	GetAvailablePatchEnvelopes(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -137,8 +148,20 @@ type ClientInterface interface {
 	DownloadPatchArchiveFile(ctx context.Context, patchID string, artifactName string, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
-func (c *Client) PostOpaqueStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostOpaqueStatusRequest(c.Server)
+func (c *Client) PostOpaqueStatusWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostOpaqueStatusRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostOpaqueStatus(ctx context.Context, body PostOpaqueStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostOpaqueStatusRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +208,19 @@ func (c *Client) DownloadPatchArchiveFile(ctx context.Context, patchID string, a
 	return c.Client.Do(req)
 }
 
-// NewPostOpaqueStatusRequest generates requests for PostOpaqueStatus
-func NewPostOpaqueStatusRequest(server string) (*http.Request, error) {
+// NewPostOpaqueStatusRequest calls the generic PostOpaqueStatus builder with application/json body
+func NewPostOpaqueStatusRequest(server string, body PostOpaqueStatusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostOpaqueStatusRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostOpaqueStatusRequestWithBody generates requests for PostOpaqueStatus with any type of body
+func NewPostOpaqueStatusRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -204,10 +238,12 @@ func NewPostOpaqueStatusRequest(server string) (*http.Request, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	req, err := http.NewRequest("POST", queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -357,8 +393,10 @@ func WithBaseURL(baseURL string) ClientOption {
 
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
-	// PostOpaqueStatusWithResponse request
-	PostOpaqueStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostOpaqueStatusResponse, error)
+	// PostOpaqueStatusWithBodyWithResponse request with any body
+	PostOpaqueStatusWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOpaqueStatusResponse, error)
+
+	PostOpaqueStatusWithResponse(ctx context.Context, body PostOpaqueStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*PostOpaqueStatusResponse, error)
 
 	// GetAvailablePatchEnvelopesWithResponse request
 	GetAvailablePatchEnvelopesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAvailablePatchEnvelopesResponse, error)
@@ -455,9 +493,17 @@ func (r DownloadPatchArchiveFileResponse) StatusCode() int {
 	return 0
 }
 
-// PostOpaqueStatusWithResponse request returning *PostOpaqueStatusResponse
-func (c *ClientWithResponses) PostOpaqueStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*PostOpaqueStatusResponse, error) {
-	rsp, err := c.PostOpaqueStatus(ctx, reqEditors...)
+// PostOpaqueStatusWithBodyWithResponse request with arbitrary body returning *PostOpaqueStatusResponse
+func (c *ClientWithResponses) PostOpaqueStatusWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOpaqueStatusResponse, error) {
+	rsp, err := c.PostOpaqueStatusWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostOpaqueStatusResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostOpaqueStatusWithResponse(ctx context.Context, body PostOpaqueStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*PostOpaqueStatusResponse, error) {
+	rsp, err := c.PostOpaqueStatus(ctx, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
